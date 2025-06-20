@@ -1,0 +1,124 @@
+{
+	"jobConfig": {
+		"name": "ue_statistics_data_ExportMssqlToRaw",
+		"description": "",
+		"role": "arn:aws:iam::<ACCT-ID>:role/glue-export-MssqlToRawS3-Role",
+		"command": "glueetl",
+		"version": "4.0",
+		"runtime": null,
+		"workerType": "G.1X",
+		"numberOfWorkers": 10,
+		"maxCapacity": 10,
+		"jobRunQueuingEnabled": false,
+		"maxRetries": 0,
+		"timeout": 5760,
+		"maxConcurrentRuns": 64,
+		"security": "none",
+		"scriptName": "ue_statistics_data_ExportMssqlToRaw.py",
+		"scriptLocation": "s3://<your-glue-asset-bucket>-<ACCT-ID>-<region-name>/scripts/ue_statistics_data_ExportMssqlToRaw/",
+		"language": "python-3",
+		"spark": true,
+		"sparkConfiguration": "standard",
+		"jobParameters": [
+			{
+				"key": "--aws_region",
+				"value": "<region-name>",
+				"existing": false
+			},
+			{
+				"key": "--driver",
+				"value": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+				"existing": false
+			},
+			{
+				"key": "--flag_file_path_prefix",
+				"value": "export_flag/",
+				"existing": false
+			},
+			{
+				"key": "--input_partition_yyyymmdd",
+				"value": " ",
+				"existing": false
+			},
+			{
+				"key": "--jdbc_url",
+				"value": "jdbc:sqlserver://mysqlserver:1433;database=databaseA",
+				"existing": false
+			},
+			{
+				"key": "--job_mode",
+				"value": "restart",
+				"existing": false
+			},
+			{
+				"key": "--log_level",
+				"value": "INFO",
+				"existing": false
+			},
+			{
+				"key": "--output_format",
+				"value": "parquet",
+				"existing": false
+			},
+			{
+				"key": "--output_num_files",
+				"value": "0",
+				"existing": false
+			},
+			{
+				"key": "--partition_col_date",
+				"value": "data_timestamp",
+				"existing": false
+			},
+			{
+				"key": "--secret_name",
+				"value": "source-mssql",
+				"existing": false
+			},
+			{
+				"key": "--source_filter",
+				"value": "data_timestamp BETWEEN  '2025-01-01 00:00:00:000' AND '2025-03-31 23:59:59' ",
+				"existing": false
+			},
+			{
+				"key": "--source_table",
+				"value": "ue_statistics_data",
+				"existing": false
+			},
+			{
+				"key": "--stats_data_bucket",
+				"value": "<your-migration-stats-bucket>",
+				"existing": false
+			},
+			{
+				"key": "--target_data_bucket",
+				"value": "export-mssql-dev-<region-name>",
+				"existing": false
+			},
+			{
+				"key": "--target_path_prefix",
+				"value": "server01/databasea/dbo/ue_statistics_data/",
+				"existing": false
+			}
+		],
+		"tags": [],
+		"jobMode": "DEVELOPER_MODE",
+		"createdOn": "2025-03-19T20:11:08.596Z",
+		"developerMode": true,
+		"temporaryDirectory": "s3://<your-glue-asset-bucket>-<ACCT-ID>-<region-name>/temporary/ue_statistics_data_ExportMssqlToRaw/",
+		"logging": true,
+		"glueHiveMetastore": true,
+		"etlAutoTuning": true,
+		"metrics": true,
+		"bookmark": "job-bookmark-disable",
+		"sparkPath": "s3://<your-glue-asset-bucket>-<ACCT-ID>-<region-name>/sparkHistoryLogs/ue_statistics_data_ExportMssqlToRaw/",
+		"flexExecution": false,
+		"minFlexWorkers": null,
+		"maintenanceWindow": null,
+		"dataLineage": false,
+		"pythonPath": null
+	},
+	"hasBeenSaved": false,
+	"usageProfileName": null,
+	"script": "import sys\nimport boto3\nimport json\nfrom awsglue.transforms import *\nfrom awsglue.utils import getResolvedOptions\nfrom pyspark.context import SparkContext\nfrom awsglue.context import GlueContext\nfrom awsglue.job import Job\nfrom pyspark.sql.functions import input_file_name,col,length,trim,lit,expr\nfrom pyspark.sql import functions as F\nfrom botocore.exceptions import ClientError\nimport boto3\nimport logging\nimport fnmatch\nimport os\nfrom datetime import datetime\nimport  pandas as pd\nfrom io import StringIO             \n\nargs = getResolvedOptions(\n    sys.argv,\n    [\n        \"JOB_NAME\",\n        \"aws_region\",\n        \"secret_name\",\n        \"jdbc_url\",\n        \"driver\",\n        \"flag_file_path_prefix\",\n        \"source_table\",\n        \"source_filter\",\n        \"partition_col_date\",\n        \"input_partition_yyyymmdd\",\n        \"target_data_bucket\",\n        \"target_path_prefix\",\n        \"output_format\",\n        \"output_num_files\",\n        \"job_mode\",\n        \"log_level\",\n        \"stats_data_bucket\"\n    ],\n)\n\n\nsc = SparkContext()\nglueContext = GlueContext(sc)\nspark = glueContext.spark_session\njob = Job(glueContext)\njob.init(args['JOB_NAME'], args)\njob_nm=args[\"JOB_NAME\"]\n\n#log_level can be [ DEBUG, INFO, WARNING, ERROR ]\nlog_level       = args[\"log_level\"] \n\nif log_level == 'ERROR':\n    logging.basicConfig(level=logging.ERROR, format='%(asctime)s %(message)s')\nelif log_level == 'DEBUG':\n    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(message)s')\nelif log_level == 'WARNING':\n    logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(message)s')\nelse:\n    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')\n\nlogger = logging.getLogger(__name__)\n\ntry:\n    \n    # Read Job parameters\n    aws_region                = args[\"aws_region\"] \n    secret_name               = args[\"secret_name\"]\n    jdbc_url                  = args[\"jdbc_url\"]\n    driver                    = args[\"driver\"]\n    flag_file_path_prefix     = args[\"flag_file_path_prefix\"]\n    source_table              = args[\"source_table\"] \n    source_filter             = args[\"source_filter\"]\n    partition_col_date        = args[\"partition_col_date\"]\n    input_partition_yyyymmdd  = args[\"input_partition_yyyymmdd\"]\n    target_data_bucket        = args[\"target_data_bucket\"]\n    target_path_prefix        = args[\"target_path_prefix\"]\n    output_format             = args[\"output_format\"]\n    output_num_files          = int(args[\"output_num_files\"])\n    job_mode                  = args[\"job_mode\"]\n    stats_data_bucket         = args[\"stats_data_bucket\"]\n    \n    df_report = pd.DataFrame(columns = ['PROCESS_NAME', 'SERVER_NAME', 'DATABASE_NAME','TABLE_NAME','PARTITION_NAME','LOAD_START_TS','LOAD_END_TS','ROW_COUNT'])\n\n        \n    # Retrieve credential from secrets manager\n    secrets_client = boto3.client('secretsmanager', region_name=aws_region)\n    get_secret_value_response = secrets_client.get_secret_value(SecretId=secret_name)\n    secret_data = get_secret_value_response['SecretString']\n    secret_data_dict = json.loads(secret_data)\n    \n    basePath = f\"s3://{target_data_bucket}\"\n\n    logger.info(f\"target_data_bucket=<{target_data_bucket}>\")\n    logger.info(f\"basePath=<{basePath}>\")\n    \n    if not job_mode == 'restart':\n        job_mode = 'resume'\n    \n    col_input_partition_filter = \"\"\n        \n    if not (input_partition_yyyymmdd is None or input_partition_yyyymmdd.strip() == \"\" or input_partition_yyyymmdd.strip() == \"NULL\"):\n        logger.info(f\"input_partition_yyyymmdd = <{input_partition_yyyymmdd}>\")\n\n        if len(input_partition_yyyymmdd.strip()) == 6:\n            logger.info(f\"Only YYYYMM has been passed = <{input_partition_yyyymmdd}>\")    \n            target_path_data = target_path_prefix + input_partition_yyyymmdd[:4] + \"/\" + input_partition_yyyymmdd[4:6]\n            target_path_flag = target_path_prefix + input_partition_yyyymmdd[:4] + \"_\" + input_partition_yyyymmdd[4:6]\n            col_input_partition_filter = f\"\"\" AND convert(varchar(6),{partition_col_date},112) = '{input_partition_yyyymmdd}' \"\"\"\n            \n        elif len(input_partition_yyyymmdd.strip()) == 8:\n            logger.info(f\"YYYYMMDD has been passed = <{input_partition_yyyymmdd}>\")    \n            target_path_data = target_path_prefix + input_partition_yyyymmdd[:4] + \"/\" + input_partition_yyyymmdd[4:6] + \"/\" + input_partition_yyyymmdd[6:]\n            target_path_flag = target_path_prefix + input_partition_yyyymmdd[:4] + \"_\" + input_partition_yyyymmdd[4:6] + \"_\" + input_partition_yyyymmdd[6:]\n            col_input_partition_filter = f\"\"\" AND convert(varchar(8),{partition_col_date},112) = '{input_partition_yyyymmdd}' \"\"\"\n        else:\n            logger.exception(f\"This is not supported, the partition format should be either YYYYMMDD or YYYYMM. The current input passed is = <{input_partition_yyyymmdd}>\")    \n            raise\n        \n        #job_mode = 'restart'\n        \n    else :     \n        target_path_data=target_path_prefix\n        target_path_flag=target_path_prefix\n    \n    logger.info(f\"target_path_data=<{target_path_data}>\")\n    logger.info(f\"target_path_flag=<{target_path_flag}>\")\n    logger.info(f\"col_input_partition_filter=<{col_input_partition_filter}>\")\n        \n    def delete_objects(bucket, object_keys):\n        try:\n            \n            s3_client = boto3.client('s3')\n            \n            for key in object_keys:\n                response = s3_client.delete_object(Bucket=bucket, Key=key)\n                logger.debug (response)\n               \n        except ClientError:\n            logger.exception(f\"Couldn't delete object from bucket : <{bucket}>\")\n            raise\n        else:\n            logger.info(\"Objects deleted successfully\")\n        \n    # Function to create a flag file in S3 after processing the input file\n    def create_flag_file(source_file_path):\n        logger.info(f\"source_file_path=<{source_file_path}>\")\n        \n        source_file_path_prefix = source_file_path.replace(f\"s3://{target_data_bucket}\",\"\")\n        logger.info(f\"source_file_path_prefix=<{source_file_path_prefix}>\")\n        \n        s3 = boto3.client('s3')\n        flag_file_path =  flag_file_path_prefix[:flag_file_path_prefix.rfind(\"/\")] + source_file_path_prefix + \".flag\"\n        \n        logger.info(f\"flag_file_path=<{flag_file_path}>\")\n        \n        s3.put_object(Bucket=target_data_bucket, Key=flag_file_path, Body=\"\")\n        return flag_file_path        \n    \n    # Find all the existing flags in the bucket\n    \n    obj_list_flag = []\n    obj_list_del_flag = []\n    \n    flag_prefix_list = flag_file_path_prefix + target_path_flag\n    logger.info(f\"flag_prefix_list=<{flag_prefix_list}>\")\n    \n    s3 = boto3.client('s3')\n    \n    try:\n        paginator = s3.get_paginator('list_objects_v2')\n        pages = paginator.paginate(Bucket=target_data_bucket, Prefix=flag_prefix_list)\n    \n        for page in pages:\n            for object in page['Contents']:\n                logger.debug(object['Key'])\n                if object['Key'].find(\".flag\") > 0 :\n                    logger.info(f\"Object <{object['Key']}>\")\n                        \n                    if object['Key'] not in obj_list_flag:\n                        obj_list_flag.append(f\"{basePath}/{object['Key']}\")\n                        obj_list_del_flag.append(object['Key'])\n    except:\n            logger.exception(f\"No object found\")\n    else:\n            logger.info(f\"Object(s) found\") \n    \n    logger.info(\"****************************************\")            \n    logger.info(f\"obj_list_flag=<{obj_list_flag}>\")\n    logger.info(f\"obj_list_del_flag=<{obj_list_del_flag}>\")\n    logger.info(\"****************************************\") \n    \n    if job_mode == 'restart':\n    \n        # Find all the existing partitions in the target bucket\n        tgt_obj_list = []\n        \n        logger.info(f\"target_path_data=<{target_path_data}>\")\n            \n        try:\n                paginator = s3.get_paginator('list_objects_v2')\n                pages = paginator.paginate(Bucket=target_data_bucket, Prefix=target_path_data)\n                \n                logger.info(f\"pages={pages}\")\n                for page in pages:\n                    for object in page['Contents']:\n                        logger.debug(object['Key'])\n                        if object['Size'] > 0:\n                            logger.info(f\"Object <{object['Key']}>\")\n                            \n                            obj_name=object['Key']\n        \n                            if obj_name not in tgt_obj_list:\n                                tgt_obj_list.append(f\"{obj_name}\")\n        except:\n                logger.exception(f\"No object found\")\n        else:\n                logger.info(f\"Object(s) found\") \n    \n        logger.info(\"********************************\")            \n        logger.info(f\"tgt_obj_list=<{tgt_obj_list}>\")\n        logger.info(\"********************************\") \n    \n        \n        #Delete all existing flags and target files \n        \n        logger.info(\"**************CLEANING FLAG FILES******************\")\n        delete_objects(target_data_bucket,obj_list_del_flag)\n    \n        logger.info(\"**************CLEANING TGT FILES******************\")\n        delete_objects(target_data_bucket,tgt_obj_list)\n        \n    else:\n        logger.info(\"We are in resume mode...\")\n        \n\n    # SQL Server connection\n    \n    db_username = secret_data_dict['username']\n    db_password = secret_data_dict['password']\n\n    query=f\"\"\"select CURRENT_TIMESTAMP as run_ts,cast({partition_col_date} as date) as partition_col,SUM(1.0) as parti_count\n              from  {source_table} \n              where {source_filter}\n                    {col_input_partition_filter}\n              group by cast({partition_col_date} as date) \n           \"\"\"\n    \n    df_count = spark.read.format(\"jdbc\").option(\"url\", jdbc_url).option(\"user\", db_username).option(\"password\", db_password).option(\"query\",query ).load() \n    \n    if len(input_partition_yyyymmdd.strip()) > 0:\n        file_date = datetime.now().strftime('%Y%m%d%H%M%S')\n        file_path = f\"export/{target_path_prefix}{source_table}_delta_partitions_{file_date}.csv\"\n            \n        csv_buffer = StringIO()\n        df_count.toPandas().to_csv(csv_buffer)\n    \n        s3_resource = boto3.resource('s3')\n        s3_resource.Object(stats_data_bucket, file_path).put(Body=csv_buffer.getvalue())\n\n    else:\n        file_path = f\"export/{target_path_prefix}{source_table}_full_partitions.csv\"\n            \n        csv_buffer = StringIO()\n        df_count.toPandas().to_csv(csv_buffer)\n    \n        s3_resource = boto3.resource('s3')\n        s3_resource.Object(stats_data_bucket, file_path).put(Body=csv_buffer.getvalue())\n\n    if log_level == 'DEBUG':\n        df_count.printSchema()\n        df_count.show(2,False)\n    \n    obj_list = df_count.select(\"partition_col\").rdd.flatMap(lambda x: x).collect()\n    \n    logger.info(f\"obj_list=<{obj_list}>\")\n    \n    if job_mode == 'restart':\n        logger.info(\"We are in restart mode...\")\n        all_filtered_list = obj_list\n    else:\n        logger.info(\"We are in resume mode...\")\n        # Get only the pending files\n        all_filtered_list=[]\n        for element in obj_list:\n            parti_flag=str(element).replace(\"-\",\"_\")\n            new_element = \"s3://\"+target_data_bucket+\"/\"+flag_file_path_prefix[:flag_file_path_prefix.rfind(\"/\")] + \"/\" + target_path_prefix + parti_flag + \".flag\"\n\n            logger.debug(f\"new_element=<{new_element}>\")\n            if new_element not in obj_list_flag:\n                logger.debug(\"Not Found\")\n                all_filtered_list.append(element)\n    \n        logger.info(\"****************************************\")\n        logger.info(f\"all_filtered_list=<{all_filtered_list}>\")\n        logger.info(\"****************************************\")\n    \n    \n    if len(all_filtered_list) <= 0:\n        logger.info(\"Nothing to process. Exiting the job...\")\n        job.commit()\n        os._exit(0)\n        \n        \n    for parti in all_filtered_list:\n        logger.info(f\"working on parti=<{parti}>\")\n        \n        parti_start_date = datetime.now().strftime('%Y%m%d%H%M%S')\n\n        query=f\"\"\"select t.*\n                  from  {source_table} t\n                  where {source_filter}\n                  and   cast({partition_col_date}  as date)  = '{parti}'\n               \"\"\"\n        \n        df = spark.read.format(\"jdbc\").option(\"url\", jdbc_url).option(\"user\", db_username).option(\"password\", db_password).option(\"query\",query ).load() \n        \n        if log_level == 'DEBUG' :\n            df.printSchema()\n            df.show(2,False)\n        \n        if output_num_files<=0:\n            logger.info(\"Inside output_num_files<=0\")\n            output_df = df\n        else:\n            logger.info(\"Inside output_num_files>0\")\n            output_df = df.repartition(output_num_files)\n        \n        parti_new=str(parti).replace(\"-\",\"/\")\n        parti_flag=str(parti).replace(\"-\",\"_\")\n        \n        output_path=\"s3://\"+target_data_bucket+\"/\"+target_path_prefix + parti_new\n        output_df.write.format(output_format).mode(\"overwrite\").save(output_path)\n        \n        output_path_flag=\"s3://\"+target_data_bucket+\"/\"+target_path_prefix + parti_flag\n        create_flag_file(output_path_flag)\n\n        \n        parti_end_date = datetime.now().strftime('%Y%m%d%H%M%S')\n        \n        logger.info(\"working on stats collection\")\n        \n        server_str=jdbc_url.replace(\"jdbc:sqlserver://\",\"\").replace(\":1433\",\"\")\n        server_name=server_str[:server_str.rfind(';')]\n        db_name=server_str[server_str.rfind(';')+1:].replace(\"database=\",\"\")\n        row_count_list=df_count.filter(col('partition_col') == parti)\n        row_count_list=row_count_list.toPandas().loc[0, ['parti_count']].values.flatten().tolist()\n\n        for rc in row_count_list:\n            row_count=rc\n        \n        logger.info(\"**************************************************************************************************\")\n        logger.info(f\"STATS_INFO=<EXPORT,{server_name},{db_name},{source_table},{parti},{parti_start_date},{parti_end_date},{row_count}>\")\n        logger.info(\"**************************************************************************************************\")\n        \n        df_report = pd.concat([df_report, pd.DataFrame.from_records([{'PROCESS_NAME':'EXPORT', 'SERVER_NAME':server_name, 'DATABASE_NAME':db_name,'TABLE_NAME':source_table,'PARTITION_NAME':parti,'LOAD_START_TS':parti_start_date,'LOAD_END_TS':parti_end_date,'ROW_COUNT':int(row_count)}])])\n        \n        pd.set_option('display.max_rows', 100)\n        pd.set_option('display.max_columns', 20)\n        pd.set_option('display.width', 150)\n    \n    \n        \n    if len(df_report) >= 1:\n        file_date = datetime.now().strftime('%Y%m%d%H%M%S')\n        file_path = f\"export/{target_path_prefix}{source_table}_stats_{file_date}.csv\"\n            \n        csv_buffer = StringIO()\n        df_report.to_csv(csv_buffer)\n    \n        s3_resource = boto3.resource('s3')\n        s3_resource.Object(stats_data_bucket, file_path).put(Body=csv_buffer.getvalue())\n    else:\n        logger.warning(\"No rows to save!\")\n        \n\nexcept Exception as e:\n    logger.exception(f\"Glue Job <{job_nm}> FAILED. Exception: {str(e)}\")\n        \n    if len(df_report) >= 1:\n            file_date = datetime.now().strftime('%Y%m%d%H%M%S')\n            file_path = f\"export/{target_path_prefix}{source_table}_stats_{file_date}.csv\"\n            \n            csv_buffer = StringIO()\n            df_report.to_csv(csv_buffer)\n    \n            s3_resource = boto3.resource('s3')\n            s3_resource.Object(stats_data_bucket, file_path).put(Body=csv_buffer.getvalue())\n    else:\n            logger.warning(\"No rows to save!\")\n        \n    raise\n\n\njob.commit()  \n    \n    \n"
+}

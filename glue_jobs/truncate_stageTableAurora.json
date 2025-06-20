@@ -1,0 +1,88 @@
+{
+	"jobConfig": {
+		"name": "truncate_stageTableAurora",
+		"description": "",
+		"role": "arn:aws:iam::<ACCT-ID>:role/glue-script-role",
+		"command": "pythonshell",
+		"version": "3.0",
+		"runtime": null,
+		"workerType": null,
+		"numberOfWorkers": null,
+		"maxCapacity": 1,
+		"jobRunQueuingEnabled": false,
+		"maxRetries": 0,
+		"timeout": 2880,
+		"maxConcurrentRuns": 10,
+		"security": "none",
+		"scriptName": "truncate_stageTableAurora.py",
+		"scriptLocation": "s3://<your-glue-asset-bucket>-<ACCT-ID>-<region-name>/scripts/truncate_stageTableAurora/",
+		"language": "python-3.9",
+		"spark": false,
+		"jobParameters": [
+			{
+				"key": "--aws_region",
+				"value": "<region-name>",
+				"existing": false
+			},
+			{
+				"key": "--input_partition_yyyymmdd",
+				"value": "NULL",
+				"existing": false
+			},
+			{
+				"key": "--log_level",
+				"value": "INFO",
+				"existing": false
+			},
+			{
+				"key": "--partition_col_date",
+				"value": "20250101",
+				"existing": false
+			},
+			{
+				"key": "--rds_database_name",
+				"value": "database",
+				"existing": false
+			},
+			{
+				"key": "--rds_endpoint",
+				"value": "aurora-pg-cluster.cluster-mydb.<region-name>.rds.amazonaws.com",
+				"existing": false
+			},
+			{
+				"key": "--rds_tcp_port",
+				"value": "5432",
+				"existing": false
+			},
+			{
+				"key": "--rds_user",
+				"value": "mydb_user",
+				"existing": false
+			},
+			{
+				"key": "--schema_name",
+				"value": "stage",
+				"existing": false
+			},
+			{
+				"key": "--table_name",
+				"value": "cell_perf_stats",
+				"existing": false
+			}
+		],
+		"tags": [],
+		"jobMode": "DEVELOPER_MODE",
+		"createdOn": "2025-06-03T06:29:46.486Z",
+		"developerMode": true,
+		"temporaryDirectory": "s3://<your-glue-asset-bucket>-<ACCT-ID>-<region-name>/temporary/truncate_stageTableAurora/",
+		"glueHiveMetastore": true,
+		"etlAutoTuning": false,
+		"observabilityMetrics": false,
+		"flexExecution": false,
+		"minFlexWorkers": null,
+		"maintenanceWindow": null
+	},
+	"hasBeenSaved": false,
+	"usageProfileName": null,
+	"script": "import os\nimport sys\nimport boto3\nimport pg8000.native \nimport logging\nfrom awsglue.utils import getResolvedOptions\nimport json\nimport ssl\nimport requests\n\nargs = getResolvedOptions(\n    sys.argv,\n    [\n        \"aws_region\",\n        \"log_level\",\n        \"rds_database_name\",\n        \"rds_endpoint\",\n        \"rds_tcp_port\",\n        \"rds_user\",\n        \"schema_name\",\n        \"table_name\",\n        \"partition_col_date\",\n        \"input_partition_yyyymmdd\"\n    ],\n)\n\n#log_level can be [ DEBUG, INFO, WARNING, ERROR ]\nlog_level = args[\"log_level\"]\n\nlogging.basicConfig(format='%(asctime)s %(message)s', stream=sys.stdout)\nlogger = logging.getLogger()\nlogger.addHandler(logging.StreamHandler(sys.stdout))\n    \nif log_level == 'ERROR':\n    logger.setLevel(logging.ERROR)\nelif log_level == 'DEBUG':\n    logger.setLevel(logging.DEBUG)\nelif log_level == 'WARNING':\n    logger.setLevel(logging.WARNING)\nelse:\n    logger.setLevel(logging.INFO)\n\nrds_endpoint = args[\"rds_endpoint\"]\nrds_tcp_port = int(args[\"rds_tcp_port\"])  # pg8000 requires port as integer\nrds_user = args[\"rds_user\"]\nrds_database_name = args[\"rds_database_name\"]\naws_region = args[\"aws_region\"]\n\nschema_name = args[\"schema_name\"]\ntable_name = args[\"table_name\"]\npartition_col_date = args[\"partition_col_date\"]\ninput_partition_yyyymmdd = args[\"input_partition_yyyymmdd\"]\n\nlogger.info(f\"Processing truncatestageTableAurora for {schema_name}.{table_name}\")\n\ndef download_rds_cert():\n    \"\"\"Download RDS certificate bundle\"\"\"\n    cert_url = \"https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem\"\n    response = requests.get(cert_url)\n    cert_path = \"/tmp/rds-ca-global.pem\"\n    with open(cert_path, \"wb\") as f:\n        f.write(response.content)\n    return cert_path\n\ndef get_connection():\n    \"\"\"Create database connection with proper IAM authentication\"\"\"\n    try:\n        # Generate new auth token\n        rds_client = boto3.client('rds', region_name=aws_region)\n        auth_token = rds_client.generate_db_auth_token(\n            DBHostname=rds_endpoint,\n            Port=rds_tcp_port,\n            DBUsername=rds_user,\n            Region=aws_region\n        )\n        \n        # Configure SSL context\n        ssl_context = ssl.create_default_context()\n        ssl_context.check_hostname = False\n        ssl_context.verify_mode = ssl.CERT_NONE  # We'll rely on IAM auth for security\n        \n        # Attempt connection\n        logger.info(f\"Attempting connection to {rds_endpoint} as {rds_user}\")\n        return pg8000.native.Connection(\n            user=rds_user,\n            password=auth_token,  # Use IAM auth token as password\n            host=rds_endpoint,\n            port=rds_tcp_port,\n            database=rds_database_name,\n            ssl_context=ssl_context,\n            timeout=30\n        )\n    except Exception as e:\n        logger.error(f\"Connection error: {str(e)}\")\n        raise\n        \ndef cleanup_table(schema_name, table_name, partition_col_date=None, input_partition_yyyymmdd=None):\n    try:\n        logger.debug(f\"Opening connection to [{rds_endpoint}] on TCP Port: [{rds_tcp_port}] using [{rds_user}]\")\n        \n        # Test connection first\n        logger.info(\"Testing database connection...\")\n        conn = get_connection()\n        test_result = conn.run(\"SELECT 1\")\n        logger.info(f\"Connection test successful: {test_result}\")\n        \n        if not (input_partition_yyyymmdd is None or input_partition_yyyymmdd.strip() == \"\" or input_partition_yyyymmdd.strip() == \"NULL\"):\n            logger.info(f\"input_partition_yyyymmdd = <{input_partition_yyyymmdd}>\")\n\n            if len(input_partition_yyyymmdd.strip()) == 6:\n                year = input_partition_yyyymmdd[:4]\n                month = input_partition_yyyymmdd[4:6]\n                \n                logger.debug(f\"YEAR=<{year}>\")\n                logger.debug(f\"MONTH=<{month}>\")\n                logger.info(f\"Invoking check_child_partition_exists for YEAR=<{year}> and MONTH=<{month}>\")\n                response = check_child_partition_exists(year, month)\n                child_table_schema = response\n                logger.info(f\"Running [TRUNCATE TABLE {schema_name}.{child_table_schema}] on {rds_endpoint}\")\n                conn.run(f\"TRUNCATE TABLE {schema_name}.{child_table_schema}\")\n            elif len(input_partition_yyyymmdd.strip()) == 8:\n                logger.info(f\"YYYYMMDD has been passed = <{input_partition_yyyymmdd}>\")\n                logger.info(f\"Running [DELETE FROM {schema_name}.{table_name} WHERE DATE({partition_col_date}) = '{input_partition_yyyymmdd}'] on {rds_endpoint}\")\n                conn.run(f\"DELETE FROM {schema_name}.{table_name} WHERE DATE({partition_col_date}) = %s\", (input_partition_yyyymmdd,))\n        else:\n            logger.info(f\"Running [TRUNCATE TABLE {schema_name}.{table_name}] on {rds_endpoint}\")\n            conn.run(f\"TRUNCATE TABLE {schema_name}.{table_name}\")\n        \n        conn.commit()\n        conn.close()\n    except Exception as e:\n        logger.exception(f\"Job Failed with Error : {e}\")\n        raise\n\ndef check_child_partition_exists(year, month):\n    try:\n        child_table_schema = f\"{table_name}_p{year}_{month}\"\n        logger.info(f\"child_table_schema=<{child_table_schema}>\")\n        query = f\"\"\"\n                SELECT c.relname AS child\n                FROM pg_inherits \n                JOIN pg_class AS c ON (inhrelid=c.oid)\n                JOIN pg_class as p ON (inhparent=p.oid)\n                JOIN pg_namespace pn ON pn.oid = p.relnamespace\n                JOIN pg_namespace cn ON cn.oid = c.relnamespace\n                WHERE c.relname = %s\n                \"\"\"\n        conn = get_connection()\n\n        status = conn.run(query, (child_table_schema,))\n        conn.close()\n        logger.info(f\"status=<{status}>\")\n        if status:\n            return child_table_schema\n        else:\n            child_table_schema = f\"{table_name}_default\"\n            return child_table_schema\n    except Exception as e:\n        logger.exception(f\"Job Failed with Error : {e}\")\n        raise\n\ncleanup_table(schema_name, table_name, partition_col_date, input_partition_yyyymmdd)\n\nlogger.info(f\"Job has completed its execution!\")\n"
+}

@@ -1,0 +1,122 @@
+{
+	"jobConfig": {
+		"name": "cellPerfStats_transformedToAurora",
+		"description": "",
+		"role": "arn:aws:iam::<ACCT-ID>:role/glue-script-role",
+		"command": "pythonshell",
+		"version": "3.0",
+		"runtime": null,
+		"workerType": null,
+		"numberOfWorkers": null,
+		"maxCapacity": 1,
+		"jobRunQueuingEnabled": false,
+		"maxRetries": 0,
+		"timeout": 2880,
+		"maxConcurrentRuns": 10,
+		"security": "none",
+		"scriptName": "cellPerfStats_transformedToAurora.py",
+		"scriptLocation": "s3://<your-glue-asset-bucket>-<ACCT-ID>-<region-name>/scripts/cellPerfStats_transformedToAurora/",
+		"language": "python-3.9",
+		"spark": false,
+		"jobParameters": [
+			{
+				"key": "--aws_region",
+				"value": "<region-name>",
+				"existing": false
+			},
+			{
+				"key": "--flag_file_path_prefix",
+				"value": "import_flag/",
+				"existing": false
+			},
+			{
+				"key": "--input_format",
+				"value": "parquet",
+				"existing": false
+			},
+			{
+				"key": "--input_partition_yyyymmdd",
+				"value": "20250101",
+				"existing": false
+			},
+			{
+				"key": "--job_mode",
+				"value": "restart",
+				"existing": false
+			},
+			{
+				"key": "--log_level",
+				"value": "INFO",
+				"existing": false
+			},
+			{
+				"key": "--pg_page_size",
+				"value": "1000",
+				"existing": false
+			},
+			{
+				"key": "--rds_database_name",
+				"value": "database",
+				"existing": false
+			},
+			{
+				"key": "--rds_endpoint",
+				"value": "aurora-pg-cluster.cluster-mydb.<region-name>.rds.amazonaws.com",
+				"existing": false
+			},
+			{
+				"key": "--rds_tcp_port",
+				"value": "5432",
+				"existing": false
+			},
+			{
+				"key": "--rds_user",
+				"value": "mydb_user",
+				"existing": false
+			},
+			{
+				"key": "--run_copy_flag",
+				"value": "yes",
+				"existing": false
+			},
+			{
+				"key": "--run_update_flag",
+				"value": "yes",
+				"existing": false
+			},
+			{
+				"key": "--src_data_bucket",
+				"value": "<your-transformed-data-bucket>",
+				"existing": false
+			},
+			{
+				"key": "--src_data_prefix",
+				"value": "server01/databasea/stage/cell_perf_stats/",
+				"existing": false
+			},
+			{
+				"key": "--stats_data_bucket",
+				"value": "<your-migration-stats-bucket>",
+				"existing": false
+			}
+		],
+		"tags": [],
+		"jobMode": "DEVELOPER_MODE",
+		"createdOn": "2025-06-16T03:13:02.667Z",
+		"developerMode": true,
+		"connectionsList": [
+			"Network connection"
+		],
+		"temporaryDirectory": "s3://<your-glue-asset-bucket>-<ACCT-ID>-<region-name>/temporary/cellPerfStats_transformedToAurora/",
+		"glueHiveMetastore": true,
+		"etlAutoTuning": false,
+		"observabilityMetrics": false,
+		"flexExecution": false,
+		"minFlexWorkers": null,
+		"maintenanceWindow": null,
+		"pythonPath": null
+	},
+	"hasBeenSaved": false,
+	"usageProfileName": null,
+	"script": "import os\nimport sys\nimport boto3\nimport logging\nimport pandas as pd\nimport numpy as np\nfrom awsglue.utils import getResolvedOptions\nimport json\nfrom datetime import datetime\nimport time\nfrom io import StringIO      \nimport pg8000.dbapi\nimport ssl\nimport requests\n\nargs = getResolvedOptions(\n    sys.argv,\n    [\n        \"input_format\",\n        \"log_level\",\n        \"src_data_bucket\",\n        \"src_data_prefix\",\n        \"rds_endpoint\",\n        \"rds_tcp_port\",\n        \"rds_user\",\n        \"rds_database_name\",\n        \"aws_region\",\n        \"flag_file_path_prefix\",\n        \"job_mode\",\n        \"input_partition_yyyymmdd\",\n        \"stats_data_bucket\",\n        \"pg_page_size\",\n        \"run_copy_flag\",\n        \"run_update_flag\"\n    ],\n)\n#log_level can be [ DEBUG, INFO, WARNING, ERROR ]\nlog_level       = args[\"log_level\"] \n\nlogging.basicConfig(format='%(asctime)s %(message)s', stream=sys.stdout)\nlogger = logging.getLogger()\nlogger.addHandler(logging.StreamHandler(sys.stdout))\n    \nif log_level == 'ERROR':\n    logger.setLevel(logging.ERROR)\nelif log_level == 'DEBUG':\n    logger.setLevel(logging.DEBUG)\nelif log_level == 'WARNING':\n    logger.setLevel(logging.WARNING)\nelse:\n    logger.setLevel(logging.INFO)\n\n\n# S3 Parameters\nsrc_data_bucket = args[\"src_data_bucket\"]\nsrc_data_prefix = args[\"src_data_prefix\"]\n\naws_region = args[\"aws_region\"]\nrds_endpoint = args[\"rds_endpoint\"]\nrds_tcp_port = args[\"rds_tcp_port\"]\nrds_database_name = args[\"rds_database_name\"]\nrds_user = args[\"rds_user\"]\npg_page_size = int(args['pg_page_size'])\nrun_copy_flag   = args[\"run_copy_flag\"]\nrun_update_flag = args[\"run_update_flag\"]\n\ninput_partition_yyyymmdd =  args[\"input_partition_yyyymmdd\"]\nstats_data_bucket     = args[\"stats_data_bucket\"]\n\n\nserver_name = src_data_prefix.split(\"/\")[0]    \nmessage_name = src_data_prefix.split(\"/\")[1]    \nschema_name = src_data_prefix.split(\"/\")[2]\ntable_name = src_data_prefix.split(\"/\")[3]\n\nflag_file_path_prefix = args[\"flag_file_path_prefix\"]\njob_mode = args[\"job_mode\"]\n\ns3_client = boto3.client('s3',region_name=aws_region)\nrds_client = boto3.client('rds',region_name=aws_region)\n\nbaseS3Path = f\"s3://{src_data_bucket}\"\noutput_path = f\"s3://{src_data_bucket}/\"\n\ndf_report = pd.DataFrame(columns = ['PROCESS_NAME', 'TABLE_NAME','PARTITION_NAME','Start_time','End_time','IMPORT_ROW_COUNT'])\n\ndef download_rds_cert():\n    \"\"\"Download RDS certificate bundle\"\"\"\n    cert_url = \"https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem\"\n    response = requests.get(cert_url)\n    cert_path = \"/tmp/rds-ca-global.pem\"\n    with open(cert_path, \"wb\") as f:\n        f.write(response.content)\n    return cert_path\n\ndef get_connection():\n    \"\"\"Create database connection with proper IAM authentication\"\"\"\n    try:\n        # Generate new auth token\n        rds_client = boto3.client('rds', region_name=aws_region)\n        auth_token = rds_client.generate_db_auth_token(\n            DBHostname=rds_endpoint,\n            Port=rds_tcp_port,\n            DBUsername=rds_user,\n            Region=aws_region\n        )\n        \n        # Configure SSL context\n        ssl_context = ssl.create_default_context()\n        ssl_context.check_hostname = False\n        ssl_context.verify_mode = ssl.CERT_NONE  # We'll rely on IAM auth for security\n        \n        # Attempt connection\n        logger.info(f\"Attempting connection to {rds_endpoint} as {rds_user}\")\n        return pg8000.dbapi.Connection(\n            user=rds_user,\n            password=auth_token,  # Use IAM auth token as password\n            host=rds_endpoint,\n            port=rds_tcp_port,\n            database=rds_database_name,\n            ssl_context=ssl_context,\n            timeout=30\n        )\n    except Exception as e:\n        logger.error(f\"Connection error: {str(e)}\")\n        raise\n    \ndef create_report(df_report):\n    try:\n        \n        \n        if len(df_report) >= 1:\n            df_report = df_report.groupby(['PROCESS_NAME', 'TABLE_NAME','PARTITION_NAME']).agg({'IMPORT_ROW_COUNT': 'sum','Start_time': 'min','End_time': 'max'}).reset_index()\n            file_date = datetime.now().strftime('%Y%m%d%H%M%S')\n            \n            file_path = f\"import/{server_name}/{message_name}/{schema_name}/{table_name}/{table_name}_stats_{file_date}.csv\"\n            \n            csv_buffer = StringIO()\n            df_report.to_csv(csv_buffer)\n        \n            s3_resource = boto3.resource('s3')\n            s3_resource.Object(stats_data_bucket, file_path).put(Body=csv_buffer.getvalue())\n        else:\n            logger.warning(\"No rows to save!\")   \n            \n    except Exception as e:\n        logger.exception(f\"Couldn't save the Stat\")\n        print(e)\n        raise\n   \ndef read_parquet_file(file):\n    try:\n        logger.debug(f\"read_parquet_file=<{file}>\")\n        df = pd.read_parquet(f\"s3://{file}\")\n        df = df.sort_values(by=['cell_id','data_timestamp'],ascending=False)\n        return df\n    except Exception as e:\n        logger.exception(f\"Couldn't read file <{file}> object from bucket : <{src_data_bucket}>\")\n        print(e)\n        raise\n\ndef delete_objects(bucket, object_keys):\n    try:\n        logger.info(\"**************CLEANING FLAG FILES******************\")\n        logger.info(f\"There are <{len(object_keys)}> flag files to be deleted.\")\n        for key in object_keys:\n            response = s3_client.delete_object(Bucket=bucket, Key=key)\n            logger.debug(f\"delete_objects=<{response}>\")\n        logger.info(f\"Objects cleaned from=<{bucket}>\")\n    except ClientError:\n        logger.exception(f\"Couldn't delete object <{object_keys}> from bucket : <{bucket}>\")\n        raise\n\n# Function to create a flag file in S3 after processing the input file\ndef create_flag_file(source_file_path):\n    logger.info(f\"create_flag_file for source_file_path=<{source_file_path}>\")\n        \n    source_file_path_prefix = source_file_path.replace(f\"s3://{src_data_bucket}\",\"\")\n    logger.debug(f\"source_file_path_prefix=<{source_file_path_prefix}>\")\n        \n    flag_file_path =  flag_file_path_prefix[:flag_file_path_prefix.rfind(\"/\")] + source_file_path_prefix + \".flag\"\n        \n    logger.debug(f\"flag_file_path=<{flag_file_path}>\")\n        \n    s3_client.put_object(Bucket=src_data_bucket, Key=flag_file_path, Body=\"\")\n    return flag_file_path\n    \ndef load_to_aurora(data, date_upd_parti, parti_flag_new):\n    try:\n        logger.debug(\"Running load_to_aurora\")\n        df = pd.DataFrame(data)\n        df = df.replace({np.NaN: None})\n        tuples = [tuple(x) for x in df.to_numpy()]\n        cols = ','.join(list(df.columns))\n        \n        logger.debug(\"Dataframe generated\")\n        logger.debug(\"*********************\")\n        logger.debug(\"TOP 5 ROWS\")\n        logger.debug(df.head(5))\n        logger.debug(\"*********************\")\n        \n        cursor = conn.cursor()\n        \n        try:\n            if run_copy_flag == 'no':\n                logger.info(\"In run_copy_flag = no flow\")\n                # Create placeholders based on number of columns\n                placeholders = ','.join(['%s' for _ in range(len(cols.split(',')))])\n                insert_query = f\"INSERT INTO {schema_name}.{table_name}({cols}) VALUES ({placeholders})\"\n                \n                # Execute in batches\n                for i in range(0, len(tuples), pg_page_size):\n                    batch = tuples[i:i + pg_page_size]\n                    cursor.executemany(insert_query, batch)\n                \n            else:\n                logger.info(\"In run_copy_flag = yes flow\")\n                # Use COPY command\n                output = StringIO()\n                df.to_csv(output, sep='\\t', header=False, index=False, doublequote=False)\n                output.seek(0)\n                \n                copy_sql = f\"COPY {schema_name}.{table_name}({cols}) FROM stdin WITH DELIMITER as E'\\\\t' CSV\"\n                logger.debug(f\"copy_sql=<{copy_sql}>\")\n                \n                cursor.execute(copy_sql, stream=output)\n                \n                if run_update_flag == 'yes':\n                    logger.info(\"Running update command\")\n                    df1 = df[['cell_id', 'data_timestamp']]\n                    tab_values = [tuple(x) for x in df1.to_numpy()]\n                    \n                    update_query = f\"\"\"\n                        UPDATE {schema_name}.{table_name} as t\n                        SET handover_attempts = CASE \n                            WHEN handover_attempts = -2147400000 THEN NULL \n                            ELSE handover_attempts \n                        END\n                        WHERE (t.cell_id, t.data_timestamp) = (%s, %s)\n                    \"\"\"\n                    \n                    cursor.executemany(update_query, tab_values)\n                else:\n                    logger.info(\"Skipping update command\")\n            \n            logger.debug(f\"Invoking create_flag_file for {parti_flag_new}\")\n            create_flag_file(parti_flag_new)\n            \n            conn.commit()\n            logger.info(f\"ROW_COUNT=<{len(tuples)}>\")\n            logger.debug(\"TRANSACTION COMMITTED!!\")\n            return True\n            \n        finally:\n            cursor.close()\n            \n    except Exception as e:\n        conn.rollback()\n        logger.exception(e)\n        return False\n\nif not job_mode == 'restart':\n     job_mode = 'resume'    \n     \nif not run_copy_flag == 'yes':\n        run_copy_flag = 'no'\n\nif not (input_partition_yyyymmdd is None or input_partition_yyyymmdd.strip() == \"\" or input_partition_yyyymmdd.strip() == \"NULL\"):\n    logger.info(f\"input_partition_yyyymmdd = <{input_partition_yyyymmdd}>\")\n\n    if len(input_partition_yyyymmdd.strip()) == 6:\n        logger.info(f\"YYYYMM has been passed = <{input_partition_yyyymmdd}>\")   \n        source_path_data = src_data_prefix + input_partition_yyyymmdd[:4] + \"/\" + input_partition_yyyymmdd[4:6]\n        target_path_data = src_data_prefix + input_partition_yyyymmdd[:4] + \"/\" + input_partition_yyyymmdd[4:6]\n        target_path_flag = src_data_prefix + input_partition_yyyymmdd[:4] + \"_\" + input_partition_yyyymmdd[4:6]\n        \n        logger.debug(f\"source_path_data=<{source_path_data}>\")\n        logger.debug(f\"target_path_data=<{target_path_data}>\")\n        logger.debug(f\"target_path_flag=<{target_path_flag}>\")\n\n    elif len(input_partition_yyyymmdd.strip()) == 8:\n        logger.info(f\"YYYYMMDD has been passed = <{input_partition_yyyymmdd}>\")    \n        source_path_data = src_data_prefix + input_partition_yyyymmdd[:4] + \"/\" + input_partition_yyyymmdd[4:6] + \"/\" + input_partition_yyyymmdd[6:]\n        target_path_data = src_data_prefix + input_partition_yyyymmdd[:4] + \"/\" + input_partition_yyyymmdd[4:6] + \"/\" + input_partition_yyyymmdd[6:]\n        target_path_flag = src_data_prefix + input_partition_yyyymmdd[:4] + \"_\" + input_partition_yyyymmdd[4:6] + \"_\" + input_partition_yyyymmdd[6:]\n        \n        logger.debug(f\"source_path_data=<{source_path_data}>\")\n        logger.debug(f\"target_path_data=<{target_path_data}>\")\n        logger.debug(f\"target_path_flag=<{target_path_flag}>\")\n    else:\n        logger.exception(f\"Value <{input_partition_yyyymmdd}> not supported. Partition format should be either YYYYMMDD or YYYYMM\")    \n        raise\n        \n    #job_mode = 'restart'\nelse:\n    source_path_data=src_data_prefix\n    target_path_data=src_data_prefix\n    target_path_flag=src_data_prefix\n            \n    logger.debug(f\"source_path_data=<{source_path_data}>\")\n    logger.debug(f\"target_path_data=<{target_path_data}>\")\n    logger.debug(f\"target_path_flag=<{target_path_flag}>\")\n\ntgt_obj_list = []\ntgt_prefix_final=\"\"\n\nobj_part_list = []\nobj_list = []\n\ntry:\n    paginator = s3_client.get_paginator('list_objects_v2')\n    page_iterator = paginator.paginate(Bucket=src_data_bucket,Prefix=source_path_data)\n    for page in page_iterator:\n        for obj in page['Contents']:\n            if obj['Size'] > 0:\n                logger.debug(f\"Working on {obj['Key']}\")\n    \n                obj_name=obj['Key']\n                part_name=obj_name[:obj_name.rfind(\"/\")]\n    \n                source_input_prefix=output_path[5:]\n                source_input_prefix=source_input_prefix[source_input_prefix.find(\"/\")+1:]\n    \n                if obj_name not in obj_list:\n                        logger.debug(f\"Adding <{obj_name}> to obj_list\")\n                        obj_list.append(f\"{baseS3Path}/{obj_name}\")\nexcept:\n    logger.exception(f\"No object found\")\nelse:\n    logger.info(f\"Object(s) found\")                        \n\nlogger.info(\"********************************\")            \nlogger.info(f\"List size=<{len(obj_list)}>;obj_list=<{obj_list}>\")\nlogger.info(\"********************************\")\n\n# Find all the existing flags in the bucket\n    \nobj_list_flag = []\nobj_list_del_flag = []\n\nflag_prefix_list = flag_file_path_prefix + target_path_flag\nlogger.info(f\"flag_prefix_list=<{flag_prefix_list}>\")\n\ntry:\n        paginator = s3_client.get_paginator('list_objects_v2')\n        pages = paginator.paginate(Bucket=src_data_bucket, Prefix=flag_prefix_list)\n        for page in pages:\n            for object in page['Contents']:\n                if object['Key'].find(\".flag\") > 0 :\n                    logger.debug(object['Key'])\n                    \n                    if object['Key'] not in obj_list_flag:\n                        logger.debug(f\"Adding <{object['Key']}> to obj_list_flag\")\n                        logger.debug(f\"Adding <{object['Key']}> to obj_list_del_flag\")\n                        obj_list_flag.append(f\"s3://{src_data_bucket}/{object['Key']}\")\n                        obj_list_del_flag.append(object['Key'])\n                    \n\nexcept:\n        logger.exception(f\"No object found\")\nelse:\n        logger.info(f\"Object(s) found\")\n\nlogger.info(\"****************************************\")            \nlogger.info(f\"List size=<{len(obj_list_flag)}>;obj_list_flag=<{obj_list_flag}>\")\nlogger.info(f\"List size=<{len(obj_list_del_flag)}>;obj_list_del_flag=<{obj_list_flag}>\")\nlogger.info(\"****************************************\")             \n\nif job_mode == \"restart\":\n    logger.info(\"<RESTART MODE>\")\n    \n    logger.info(\"Invoking delete_objects\")\n    delete_objects(src_data_bucket,obj_list_del_flag)\n    \n    all_filtered_list=obj_list\n                \nelse:\n    logger.info(\"<RESUME MODE>\")\n\n    all_filtered_list=[]\n    for element in obj_list:\n        logger.debug(f\"element=<{element}>\")\n        parti_flag='_'.join(element.rsplit('/', 3))\n        logger.debug(f\"parti_flag=<{parti_flag}>\")\n             \n        new_element = parti_flag + \".flag\"\n        \n        string_parts = new_element.split(\"/\")\n        string_parts.insert(3,flag_file_path_prefix.replace(\"/\",\"\")) # Doing this to remove the / from the parameter\n        new_element = \"/\".join(string_parts)\n\n        logger.debug(f\"new_element=<{new_element}>\")\n\n        if new_element not in obj_list_flag:\n            logger.debug(f\"{new_element} : Not Found\")\n            all_filtered_list.append(element)\n\n\n    logger.info(\"****************************************\")\n    logger.info(f\"all_filtered_list=<{all_filtered_list}>\")\n    logger.info(\"****************************************\")\n    \nif len(all_filtered_list) <= 0:\n        logger.warning(\"Nothing to process. Exiting the job...\")\n        \n        os._exit(0)\n\nlogger.debug(f\"Opening connection to [{rds_endpoint}] on TCP Port: [{rds_tcp_port}] using [{rds_user}]\")\nconn = get_connection() \n\nconn.autocommit = False\ncursor = conn.cursor()\n\nfor parti_ip in all_filtered_list:\n     logger.info(f\"Working on [{parti_ip}]\")\n     \n     parti = parti_ip\n     parti_flag_new='_'.join(parti_ip.rsplit('/', 3))\n\n     date_upd_parti=parti_ip[5:].split(\"/\")[5] + \"-\" + parti[5:].split(\"/\")[6] + \"-\" + parti[5:].split(\"/\")[7]\n     logger.info(f\"partition-date is <{date_upd_parti}>\")\n     \n     logger.debug(f\"Invoking read_parquet_file for {parti[5:]}\")\n     response = read_parquet_file(parti[5:])\n     \n     start_time = datetime.now()           \n     logger.debug(f\"Invoking load_to_aurora for {parti[5:]}\")\n     aurora_response = load_to_aurora(response,date_upd_parti,parti_flag_new)\n    \n     if aurora_response is False:\n        logger.info(f\"Creating Report\")\n        create_report(df_report)\n        os._exit(1)\n        \n     end_time = datetime.now()\n     delta = end_time - start_time\n     \n     logger.info(f\"load_to_aurora elapsed_time=<{delta.total_seconds()}> second(s)\") \n     \n     logger.info(\"****************************************************************************************************************************************************************************\")\n     logger.info(f\"STATS_INFO=<IMPORT,{table_name},{date_upd_parti},{parti[5:]},{start_time.strftime('%Y%m%d%H%M%S')},{end_time.strftime('%Y%m%d%H%M%S')},{len(pd.DataFrame(response))}>\")\n     logger.info(\"****************************************************************************************************************************************************************************\")\n \n     df_report = pd.concat([df_report, pd.DataFrame.from_records([{'PROCESS_NAME':'IMPORT',   'TABLE_NAME':table_name,'PARTITION_NAME': date_upd_parti ,'Start_time':start_time.strftime('%Y%m%d%H%M%S'),'End_time':end_time.strftime('%Y%m%d%H%M%S') , 'IMPORT_ROW_COUNT' : len(pd.DataFrame(response))}])])\n\n\ncreate_report(df_report)\n\ncursor.close()\nconn.close()\n\nlogger.info(\"Job completed!\")\n\n"
+}

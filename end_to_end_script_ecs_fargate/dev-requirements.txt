@@ -1,0 +1,12 @@
+aws-sam-cli
+awscli
+boto3
+botocore
+mock
+pip
+pylint
+pytest
+pyyaml
+six
+tenacity
+urllib3
